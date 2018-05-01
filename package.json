@@ -1,0 +1,30 @@
+{
+  "name": "reffy-service",
+  "version": "0.1.0",
+  "description": "HTTP service endpoint for Reffy.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tidoust/reffy-service.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tidoust/reffy-service/issues"
+  },
+  "author": {
+    "name": "tidoust",
+    "email": "fd@w3.org"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "body-parser": "^1.18.2",
+    "compression": "^1.7.2",
+    "express": "^4.16.3",
+    "fetch-filecache-for-crawling": "^2.0.0",
+    "morgan": "^1.9.0",
+    "promisify-require": "^1.0.1",
+    "reffy": "^1.1.2",
+    "whatwg-url": "^6.4.1"
+  },
+  "scripts": {
+    "start": "node http-service.js"
+  }
+}
