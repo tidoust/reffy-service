@@ -18,12 +18,69 @@ const studyCrawl = require('reffy/study-crawl').studyCrawl;
 const promisifyRequire = require('promisify-require');
 const fs = promisifyRequire('fs');
 const fetch = require('fetch-filecache-for-crawling');
-const config = require('./config.json');
 const app = express();
-const httpPort = config.httpPort || 3000;
+
+/**********************************************************************
+Initialize HTTP service parameters from config.json file, or use
+default values
+**********************************************************************/
+let config = null;
+try {
+  config = require('./config.json');
+}
+catch (err) {
+  config = {};
+}
+
+/**
+ * HTTP port number
+ */
+config.httpPort = config.httpPort || 3000;
+
+/**
+ * Where to get the crawl reports from. Defaults to fetching "reffy-reports"
+ * published every day on GitHub
+ */
 config.crawlReports = config.crawlReports ||
   'https://tidoust.github.io/reffy-reports/';
+if (config.crawlReports.startsWith('http:') ||
+    config.crawlReports.startsWith('https:')) {
+  if (!config.crawlReports.endsWith('/')) {
+    config.crawlReports += '/';
+  }
+}
 
+/**
+ * Cache refresh strategy for crawl reports. Defaults to refreshing the contents
+ * of the cache after 1/2 day for crawls. Possible values defined in:
+ * https://github.com/tidoust/fetch-filecache-for-crawling#configuration
+ */
+config.crawlRefresh = config.crawlRefresh || 43200;
+
+/**
+ * Cache refresh strategy for specs to check. Defaults to forcing a new fetch
+ * request each time as people usually want to check the latest version of a
+ * spec, and not a cached version that could already be obsolete. Possible
+ * values defined in:
+ * https://github.com/tidoust/fetch-filecache-for-crawling#configuration
+ */
+config.cacheRefresh = config.cacheRefresh || 'force';
+
+/**
+ * Cache folder
+ */
+config.cacheFolder = config.cacheFolder || '.cache';
+
+/**
+ * Whether to output additional execution traces to the console
+ * (should only be set in debug mode)
+ */
+config.logToConsole = config.logToConsole || false;
+
+
+/**
+ * Error returned when a request parameter is missing or is not valid
+ */
 function ParamError(message) {
   this.name = 'ParamError';
   this.message = message || '';
@@ -31,17 +88,10 @@ function ParamError(message) {
 ParamError.prototype = Error.prototype;
 
 
-function CheckError(message) {
-  this.name = 'CheckError';
-  this.message = message || '';
-}
-CheckError.prototype = Error.prototype;
-
-
 /**
  * HTTP request identifier (incremented after each request)
  */
-let requestID = 0;
+let counter = 0;
 
 
 
@@ -266,6 +316,31 @@ async function assembleResponse(query, crawl, study) {
 
 
 /**
+ * Fetches the requested report from the network or from local file storage
+ *
+ * @param  {String} crawlType  The crawl type ("w3c", "w3c-tr", "whatwg")
+ * @param  {String} reportType The report to retrieve ("crawl" or "study")
+ * @return {Promise(Object)} The promise to get the report's results
+ */
+async function fetchReport(crawlType, reportType) {
+  let res = {};
+  if (config.crawlReports.startsWith('http:') ||
+      config.crawlReports.startsWith('https:')) {
+    let response = await fetch(
+      `${config.crawlReports}${crawlType}/${reportType}.json`,
+      { refresh: config.crawlRefresh }
+    );
+    res = await response.json();
+  }
+  else {
+    res = requireFromWorkingDirectory(
+      path.resolve(config.crawlReports, crawlType, `${reportType}.json`));
+  }
+  return res.results || [];
+}
+
+
+/**
  * Processes a valid request to check specs against the latest known crawl
  * report.
  *
@@ -275,18 +350,7 @@ async function assembleResponse(query, crawl, study) {
  */
 async function processCheckQuery(query) {
   // Load latest crawl report
-  let refCrawl = {};
-  if (config.crawlReports.startsWith('http:') ||
-      config.crawlReports.startsWith('https:')) {
-    let response = await fetch(`${config.crawlReports}/${query.crawl}/crawl.json`);
-    refCrawl = await response.json();
-  }
-  else {
-    refCrawl = requireFromWorkingDirectory(
-      path.resolve(config.crawlReports, query.crawl, 'crawl.json'));
-  }
-  refCrawl = refCrawl.results || [];
-
+  let refCrawl = await fetchReport(query.crawl, 'crawl');
   let crawlOptions = { publishedVersion: (query.crawl === 'w3c-tr') };
   let crawlResults = await crawlList(query.specs, crawlOptions)
   let crawl = {
@@ -319,16 +383,7 @@ async function processSpecsQuery(query) {
   // Load latest crawl report if crawl info was requested
   let crawl = {};
   if (query.report.includes('crawl')) {
-    if (config.crawlReports.startsWith('http:') ||
-        config.crawlReports.startsWith('https:')) {
-      let response = await fetch(`${config.crawlReports}/${query.crawl}/crawl.json`);
-      crawl = await response.json();
-    }
-    else {
-      crawl = requireFromWorkingDirectory(
-        path.resolve(config.crawlReports, query.crawl, 'crawl.json'));
-    }
-    crawl = crawl.results || [];
+    crawl = await fetchReport(query.crawl, 'crawl');
   }
 
   // Load latest analysis if analysis info was requested or if IDL info was
@@ -336,16 +391,7 @@ async function processSpecsQuery(query) {
   // read the right IDL file)
   let study = {};
   if (query.report.includes('analysis') || query.report.includes('idl')) {
-    if (config.crawlReports.startsWith('http:') ||
-        config.crawlReports.startsWith('https:')) {
-      let response = await fetch(`${config.crawlReports}/${query.crawl}/study.json`);
-      study = response.json();
-    }
-    else {
-      study = requireFromWorkingDirectory(
-        path.resolve(config.crawlReports, query.crawl, 'study.json'));
-    }
-    study = study.results || [];
+    study = await fetchReport(query.crawl, 'study.json');
   }
 
   return assembleResponse(query, crawl, study);
@@ -362,17 +408,17 @@ async function processSpecsQuery(query) {
  */
 function getRequestMiddleware(processFunction) {
   return (req, res, next) => {
-    let reqID = requestID;
-    requestID += 1;
-    console.time(`request ${reqID}`);
+    const requestId = counter;
+    counter += 1;
+    //console.time(`request ${requestId}`);
     getQueryFromRequest(req)
       .then(validateQuery)
       .then(processFunction)
       .then(result => Object.assign({ status: 'ok' }, result))
       .then(result => res.json(result))
       .then(_ => next())
-      .catch(err => next(err))
-      .then(_ => console.timeEnd(`request ${reqID}`));
+      .catch(err => next(err));
+      //.then(_ => console.timeEnd(`request ${requestId}`));
   };
 }
 
@@ -430,10 +476,19 @@ app.use(function (err, req, res, next) {
 
 
 ///////////////////////////
+// Set fetch parameters
+///////////////////////////
+
+fetch.setParameter('cacheFolder', config.cacheFolder);
+fetch.setParameter('logToConsole', config.logToConsole);
+fetch.setParameter('refresh', config.cacheRefresh);
+
+
+///////////////////////////
 // Start the HTTP server
 ///////////////////////////
 
-app.listen(httpPort, (err) => {
+app.listen(config.httpPort, (err) => {
   if (err) {
     console.error(err);
     process.exit(64);
