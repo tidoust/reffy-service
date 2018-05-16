@@ -8,17 +8,18 @@
 
 const path = require('path');
 const express = require('express');
-const morgan = require('morgan');
 const compression = require('compression');
 const bodyParser = require('body-parser');
 const URL = require('whatwg-url').URL;
-const crawlList = require('reffy/crawl-specs').crawlList;
-const mergeCrawlResults = require('reffy/merge-crawl-results').mergeCrawlResults;
-const studyCrawl = require('reffy/study-crawl').studyCrawl;
+const crawlList = require('reffy/src/cli/crawl-specs').crawlList;
+const mergeCrawlResults = require('reffy/src/cli/merge-crawl-results').mergeCrawlResults;
+const studyCrawl = require('reffy/src/cli/study-crawl').studyCrawl;
 const promisifyRequire = require('promisify-require');
 const fs = promisifyRequire('fs');
 const fetch = require('fetch-filecache-for-crawling');
+const monitor = require('./monitor');
 const app = express();
+
 
 /**********************************************************************
 Initialize HTTP service parameters from config.json file, or use
@@ -290,19 +291,35 @@ async function assembleResponse(query, crawl, study) {
       // Return a few useful properties even when only the raw IDL
       // was requested
       if ((query.report.length === 1) && studyResult) {
-        result[spec.url].title = studyResult.title;
-        result[spec.url].date = studyResult.date;
-        result[spec.url].crawled = studyResult.crawled;
+        specResult.title = studyResult.title;
+        specResult.date = studyResult.date;
+        specResult.crawled = studyResult.crawled;
       }
 
       try {
-        result[spec.url].rawidl = await fs.readFile(path.resolve(
-          config.crawlReports, query.crawl, 'idl',
-          getShortname(studyResult || spec) + '.idl'), 'utf8');
+        if (config.crawlReports.startsWith('http:') ||
+            config.crawlReports.startsWith('https:')) {
+          let response = await fetch(
+            `${config.crawlReports}${query.crawl}/idl/${getShortname(studyResult || spec)}.idl`,
+            { refresh: config.crawlRefresh }
+          );
+          if (response.status === 200) {
+            specResult.rawidl = await response.text();
+          }
+          else {
+            // No IDL known, or an error occurred, that's OK too
+            specResult.rawidl = '';
+          }
+        }
+        else {
+          specResult.rawidl = await fs.readFile(path.resolve(
+            config.crawlReports, query.crawl, 'idl',
+            getShortname(studyResult || spec) + '.idl'), 'utf8');
+        }
       }
       catch (err) {
         // No IDL known, that's OK too
-        result[spec.url].rawidl = '';
+        specResult.rawidl = '';
       }
     };
     if (!specResult.error &&
@@ -323,7 +340,7 @@ async function assembleResponse(query, crawl, study) {
  * @return {Promise(Object)} The promise to get the report's results
  */
 async function fetchReport(crawlType, reportType) {
-  let res = {};
+  let res = [];
   if (config.crawlReports.startsWith('http:') ||
       config.crawlReports.startsWith('https:')) {
     let response = await fetch(
@@ -381,7 +398,7 @@ async function processCheckQuery(query) {
  */
 async function processSpecsQuery(query) {
   // Load latest crawl report if crawl info was requested
-  let crawl = {};
+  let crawl = [];
   if (query.report.includes('crawl')) {
     crawl = await fetchReport(query.crawl, 'crawl');
   }
@@ -389,9 +406,9 @@ async function processSpecsQuery(query) {
   // Load latest analysis if analysis info was requested or if IDL info was
   // requested (analysis info will help compute the shortname of the spec to
   // read the right IDL file)
-  let study = {};
+  let study = [];
   if (query.report.includes('analysis') || query.report.includes('idl')) {
-    study = await fetchReport(query.crawl, 'study.json');
+    study = await fetchReport(query.crawl, 'study');
   }
 
   return assembleResponse(query, crawl, study);
@@ -429,7 +446,7 @@ app.set('json spaces', 2);
 
 
 // Set up the logger, compression, and body parser middlewares
-app.use(morgan('combined'));
+monitor.install(app, { entries: config.entries });
 app.use(compression());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
@@ -438,12 +455,12 @@ app.use(bodyParser.json());
 ///////////////////////////
 // HTTP service endpoints
 ///////////////////////////
-
 app.get('/check', getRequestMiddleware(processCheckQuery));
 app.post('/check', getRequestMiddleware(processCheckQuery));
 app.get('/specs', getRequestMiddleware(processSpecsQuery));
 app.post('/specs', getRequestMiddleware(processSpecsQuery));
 
+monitor.stats(app);
 
 ///////////////////////////
 // Error handler
