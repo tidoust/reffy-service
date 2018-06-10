@@ -21,6 +21,7 @@
     "fetch-filecache-for-crawling": "^3.0.1",
     "promisify-require": "^1.0.1",
     "reffy": "^1.2.0",
+    "rimraf": "^2.6.2",
     "whatwg-url": "^6.4.1"
   },
   "scripts": {

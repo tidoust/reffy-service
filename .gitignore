@@ -1,3 +1,4 @@
 .cache
+.querycache
 node_modules
 config.json
