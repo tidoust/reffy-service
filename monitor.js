@@ -1,5 +1,9 @@
+/* eslint no-console: "off", quotes: ["error", "double"] */
+"use strict";
+
 // const monitor  = require('./monitor.js');
-// var app = express();
+// let app = express();
+// monitor.setName("MyService");
 // monitor.install(app, [options]);
 //
 // options.path - HTTP root path for the monitor, default is /monitor
@@ -15,13 +19,14 @@
 // and don't forget to use next() im between for each router/middleware
 // you'll then see those time info added to the log
 
+let request_current = 0;
+let request_total = 0;
+let request_error = 0;
+let request_warning = 0;
+let name = "Generic Express Monitor";
 
-
-var request_current = 0;
-var request_total = 0;
-
-var logs = [];
-var MAX_ENTRIES = 50;
+let logs = [];
+let MAX_ENTRIES = 50;
 
 function add(msg) {
   if (logs.length === (MAX_ENTRIES * 2)) {
@@ -35,42 +40,38 @@ function getDate(msg) {
   return  "[" + (new Date()).toISOString() + "] " + msg;
 }
 
-logStat = function(msg) {
-  var args = "[stat] " + msg;
+let logStat = function(msg) {
+  let args = "[stat] " + msg;
   add(args);
-  process.nextTick(function() {
-    console.log(args);
-  });
+  process.nextTick(() => console.log(args));
+};
+
+exports.setName = function(newName) {
+  name = newName;
 }
 
 exports.log = function(msg) {
-  var args = "[log] " + getDate(msg);
+  let args = "[log] " + getDate(msg);
   add(args);
-  process.nextTick(function() {
-    console.log(args);
-  });
-}
+  process.nextTick(() => console.log(args));
+};
 
 exports.warn = function(msg) {
-  var args = "[warn] " + getDate(msg);
+  let args = "[warn] " + getDate(msg);
+  request_warning++;
   add(args);
-  process.nextTick(function() {
-    console.warn(args);
-  });
-}
+  process.nextTick(() => console.warn(args));
+};
 
-exports.err = function(msg) {
-  var args = "[err] " + getDate(msg);
+exports.error = function(msg) {
+  request_error++;
+  let args = "[err] " + getDate(msg);
   add(args);
-  process.nextTick(function() {
-    console.error(args);
-  });
-}
-
-var instance_identifier = "" + Math.floor(Math.random() * 10000000);
+  process.nextTick(() => console.error(args));
+};
 
 exports.install = function(app, options) {
-  var path = '/monitor';
+  let path = "/monitor";
   if (options !== undefined) {
     if (options.path !== undefined) {
       path = options.path;
@@ -78,7 +79,6 @@ exports.install = function(app, options) {
     if (options.entries !== undefined) {
       MAX_ENTRIES = options.entries;
     }
-
   }
 
   // monitor all methods
@@ -91,55 +91,52 @@ exports.install = function(app, options) {
   });
 
   // grabs the logs easily
-  app.get(path + '/logs', function (req, res, next) {
+  app.get(path + "/logs", function (req, res, next) {
     process.nextTick(function() {
       console.warn("[monitor] " + getDate("/logs " + req.ip));
     });
-    var output = "";
-    var begin = logs.length - MAX_ENTRIES;
-    var end = logs.length;
+    let output = "";
+    let begin = logs.length - MAX_ENTRIES;
+    let end = logs.length;
     if (begin < 0) {
       begin = 0;
     }
     output = logs[begin++];
     for (let index = begin; index < end; index++) {
-      output += '\n' + logs[index];
+      output += "\n" + logs[index];
     }
-    res.set('Content-Type', 'text/plain');
+    res.set("Content-Type", "text/plain");
+    res.set("Access-Control-Allow-Origin", "*");
     res.send(output);
     next();
   });
 
   // simple way to check if the server is alive
-  app.get(path + '/ping', function (req, res, next) {
-    res.set('Content-Type', 'text/plain');
-    res.send('pong');
+  app.get(path + "/ping", function (req, res, next) {
+    res.set("Content-Type", "text/plain");
+    res.set("Access-Control-Allow-Origin", "*");
+    res.send("pong");
     next();
   });
 
   // simple way to check if the server is alive
-  app.get(path + '/usage', function (req, res, next) {
-    res.set('Content-Type', 'application/json');
-    var obj = process.memoryUsage();
+  app.get(path + "/usage", function (req, res, next) {
+    res.set("Content-Type", "application/json");
+    res.set("Access-Control-Allow-Origin", "*");
+    let obj = process.memoryUsage();
+    obj.status = "ok";
+    obj.name = name;
     obj.uptime = process.uptime();
     obj.cpuUsage = process.cpuUsage();
-    obj.requests = { total: request_total, current: request_current };
+    obj.requests = { total: request_total, current: request_current, errors: request_error, warnings: request_warning };
     res.send(JSON.stringify(obj));
     next();
   });
-}
+};
 
-exports.stats = function(app, options) {
-  var path = '/monitor';
-  if (options !== undefined) {
-    if (options.path !== undefined) {
-      path = options.path;
-    }
-  }
-
-  // grabs the logs easily
+exports.stats = function(app) {
   app.use(function (req, res, next) {
-    var log = req.method + " " + req.originalUrl;
+    let log = req.method + " " + req.originalUrl;
     if (req.get("traceparent") !== undefined) {
       log = "[" + req.get("traceparent") + "] " + log;
     }
@@ -147,4 +144,4 @@ exports.stats = function(app, options) {
     request_current--;
     next();
   });
-}
+};
